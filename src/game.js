@@ -366,7 +366,7 @@ function sprite(g,car,alpha){
  const x=lerp(car.prevX??car.x,car.x,alpha);
  const y=lerp(car.prevY??car.y,car.y,alpha);
  const kind=car.kind,len=kind===2?112:kind===1?103:93,half=len/2;
- g.save();g.translate(x,y);g.rotate(routeAngle(x));
+ g.save();g.translate(x,y);g.rotate(routeAngle(x));g.scale(1.05,.88);
  rr(g,-half+5,-25,len,56,16,"rgba(8,19,27,.38)");
  for(const wx of [-half+19,half-21])for(const wy of [-27,20]){
   rr(g,wx-11,wy,24,11,4,"#0d1e25");rr(g,wx-8,wy+2,17,6,2,"#485a62");
