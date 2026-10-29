@@ -34,23 +34,43 @@ const canBuy=(id)=>allowed(id)&&s.cash>=price(id);
 const cars=[],floaters=[],particles=[],smoke=[];
 const palettes=["#df5b55","#4f99c0","#e0be6c","#f1f3e9","#407e71","#b38fbd","#445a70","#d98054"];
 let carID=0, active=null, nextArrival=0, selected=null, panelType="",simTime=0,frame=performance.now(),accum=0,clock=0;
-let view={x:800,y:500,zoom:1,scale:1,fit:1,w:1,h:1},dpr=1;
+let view={x:850,y:500,zoom:1,scale:1,fit:1,w:1,h:1},dpr=1;
+let cameraInitialized=false;
 const reducedMotion=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 let speed=1,toastTimer=0,dirtyHud=true,lastHud=0,lastSave=0;
 const pointers=new Map();let drag=false,lastPoint=null,pinchStart=0,pinchZoom=1,touchMoved=false;
 const worldPoint=(x,y)=>({x:view.x+(x-view.w/2)/view.scale,y:view.y+(y-view.h/2)/view.scale});
+function focusedZoom(){
+ // Keep cars at a useful on-screen size: roughly 60 CSS pixels long on phones.
+ // The world always scales UNIFORMLY, regardless of device aspect ratio.
+ const wanted=(view.w<1100||view.h<540)?0.62:view.fit;
+ return clamp(wanted/view.fit,1,5.4);
+}
 function resize(){
  const rect=canvas.getBoundingClientRect();
+ const oldScale=view.scale;
  view.w=Math.max(1,rect.width);view.h=Math.max(1,rect.height);
- dpr=Math.min(window.devicePixelRatio||1,2);
- canvas.width=Math.round(view.w*dpr);canvas.height=Math.round(view.h*dpr);
+ // Use actual backing pixels, with a memory budget for large desktop monitors.
+ dpr=Math.max(1,Math.min(window.devicePixelRatio||1,3,Math.sqrt(5500000/(view.w*view.h))));
+ const pixelW=Math.round(view.w*dpr),pixelH=Math.round(view.h*dpr);
+ if(canvas.width!==pixelW)canvas.width=pixelW;
+ if(canvas.height!==pixelH)canvas.height=pixelH;
  view.fit=Math.min(view.w/1710,view.h/1100);
+ if(!cameraInitialized){
+  view.zoom=focusedZoom();
+  view.x=view.zoom>1.1?850:800;view.y=500;
+  cameraInitialized=true;
+ }else{
+  // Preserve apparent object size while rotating a phone or resizing a window.
+  view.zoom=clamp(oldScale/view.fit,1,5.4);
+ }
  view.scale=view.fit*view.zoom;
+ clampCamera();
 }
 window.addEventListener("resize",resize);resize();
 function setZoom(z,atX=view.w/2,atY=view.h/2) {
  const pivot=worldPoint(atX,atY);
- view.zoom=clamp(z,1,4.1);view.scale=view.fit*view.zoom;
+ view.zoom=clamp(z,1,5.4);view.scale=view.fit*view.zoom;
  view.x=pivot.x-(atX-view.w/2)/view.scale;
  view.y=pivot.y-(atY-view.h/2)/view.scale;
  clampCamera();
@@ -60,7 +80,13 @@ function clampCamera(){
  view.x=clamp(view.x,Math.min(w,W/2),Math.max(W-w,W/2));
  view.y=clamp(view.y,Math.min(h,H/2),Math.max(H-h,H/2));
 }
-function resetCamera(){view.x=800;view.y=500;setZoom(1);}
+function resetCamera(){
+ // First tap shows the whole plot. Second tap focuses back on the wash tunnel.
+ const full=view.zoom>1.15;
+ view.x=full?800:850;view.y=500;
+ view.zoom=full?1:focusedZoom();view.scale=view.fit*view.zoom;
+ clampCamera();
+}
 function toCanvas(e){const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top}}
 canvas.addEventListener("pointerdown",(e)=>{
  canvas.setPointerCapture(e.pointerId);const p=toCanvas(e);pointers.set(e.pointerId,p);
@@ -142,7 +168,7 @@ function spawn(){
  if(waiting>=maxWaiting){s.missed++;dirtyHud=true;return}
  if(cars.some(c=>c.x<35&&c.stage==="queue"))return;
  const kind=Math.floor(rnd(0,3)),program=Math.random()<.15?"Deluxe":Math.random()<.42?"Premium":"Basis";
- cars.push({id:++carID,kind,color:palettes[Math.floor(rnd(0,palettes.length))],program,x:-125,y:501,v:0,stage:"queue",wet:0,glow:0,foam:0,paid:false});
+ cars.push({id:++carID,kind,color:palettes[Math.floor(rnd(0,palettes.length))],program,x:-125,y:routeY(-125),prevX:-125,prevY:routeY(-125),v:0,stage:"queue",wet:0,glow:0,foam:0,paid:false});
 }
 function addParticles(x,y,type,n){
  if(reducedMotion)return;
@@ -157,6 +183,10 @@ function completed(car){
  dirtyHud=true;save();
  if(s.washed===8||s.washed===24)toast("Nieuwe terreinuitbreiding beschikbaar!");
 }
+// A gently curved entrance and exit keep vehicle heading aligned with its route.
+function smoothstep(a,b,x){const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t);}
+function routeY(x){return 501+29*(1-smoothstep(40,320,x))+24*smoothstep(1410,1680,x);}
+function routeAngle(x){return Math.atan2(routeY(x+3)-routeY(x-3),6);}
 function simulation(dt){
  simTime+=dt;nextArrival-=dt;
  if(nextArrival<=0){
@@ -165,6 +195,7 @@ function simulation(dt){
  const sorted=[...cars].sort((a,b)=>b.x-a.x);
  for(let i=0;i<sorted.length;i++){
   const car=sorted[i],lead=sorted[i-1];let desired=165;
+  car.prevX=car.x;car.prevY=car.y;
   if(car.stage==="queue"){
     let stop=active!==null?550:1900;
     if(lead&&lead.stage!=="exit"&&lead.stage!=="vacuum")stop=Math.min(stop,lead.x-119);
@@ -182,6 +213,7 @@ function simulation(dt){
   const acceleration=car.v<desired?210:350;
   car.v+=clamp(desired-car.v,-acceleration*dt,acceleration*dt);
   car.x+=car.v*dt;
+  car.y=routeY(car.x);
  }
  for(let i=cars.length-1;i>=0;i--)if(cars[i].x>1740)cars.splice(i,1);
  for(let i=particles.length-1;i>=0;i--){let p=particles[i];p.life-=dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.vx*=.98;if(p.life<=0)particles.splice(i,1)}
@@ -213,7 +245,11 @@ function patch(c,x,y,w,h,enabled,title,sub){
  if(!enabled){rr(c,x+18,y+18,w-36,h-36,10,"rgba(18,37,38,.50)");text(c,title,x+w/2,y+h/2-13,"#e2ebe8",16,850);text(c,sub,x+w/2,y+h/2+17,"#b5cac4",12,650)}
 }
 function buildBase(){
- const c=document.createElement("canvas");c.width=W;c.height=H;const g=c.getContext("2d");
+ // Rasterize static scenery at 2x world resolution so zooming does not enlarge
+ // a low-resolution image. Draw it back at WORLD dimensions in render().
+ const c=document.createElement("canvas");c.width=W*2;c.height=H*2;
+ const g=c.getContext("2d");g.setTransform(2,0,0,2,0,0);
+ g.imageSmoothingEnabled=true;g.imageSmoothingQuality="high";
  g.fillStyle="#315b46";g.fillRect(0,0,W,H);
  let seed=73421;const random=()=>{seed=(seed*1664525+1013904223)>>>0;return seed/4294967296};
  for(let i=0;i<1600;i++){
@@ -326,9 +362,11 @@ function unlockedBuildings(g){
  }else patch(g,1002,692,299,224,false,"INTERIEURSERVICE","24 auto's · € 4.200");
  patch(g,604,96,701,80,false,"TWEEDE WASLIJN","TOEKOMSTIGE UITBREIDING");
 }
-function sprite(g,car){
- const x=car.x,y=car.y,kind=car.kind;const len=kind===2?112:kind===1?103:93,half=len/2;
- g.save();g.translate(x,y);
+function sprite(g,car,alpha){
+ const x=lerp(car.prevX??car.x,car.x,alpha);
+ const y=lerp(car.prevY??car.y,car.y,alpha);
+ const kind=car.kind,len=kind===2?112:kind===1?103:93,half=len/2;
+ g.save();g.translate(x,y);g.rotate(routeAngle(x));
  rr(g,-half+5,-25,len,56,16,"rgba(8,19,27,.38)");
  for(const wx of [-half+19,half-21])for(const wy of [-27,20]){
   rr(g,wx-11,wy,24,11,4,"#0d1e25");rr(g,wx-8,wy+2,17,6,2,"#485a62");
@@ -383,12 +421,20 @@ function effects(g,t){
  g.globalAlpha=1;
 }
 function labels(g,t){
+ // Small world labels used to collapse to illegible 3–6 CSS pixels on phones.
+ // Keep them near 12 screen pixels at the zoomed-in mobile camera.
+ const fontSize=clamp(12/Math.max(.1,view.scale),11,25);
+ const badgeWidth=clamp(105/Math.max(.1,view.scale),108,190);
+ const badgeHeight=clamp(29/Math.max(.1,view.scale),30,52);
  const spots=[["queue",412,396],["prewash",642,622],["belt",938,633],["wax",1221,622],["marketing",277,157]];
  for(const [id,x,y] of spots){
   const isSelected=selected===id,up=s.upgrades[id];
-  rr(g,x-54,y-15,108,30,8,isSelected?"#3b9d97":"#102f3edc");
-  text(g,id==="queue"?"WACHTRIJ":id==="prewash"?"VOORWAS":id==="belt"?"WASSTRAAT":id==="wax"?"WAX":"KANTOOR",x,y-1,isSelected?"#ecfffc":"#d3e9e6",11,850);
-  if(up>0){rr(g,x+43,y-15,20,16,4,"#bcecd1");text(g,""+up,x+53,y-7,"#143b35",10,900)}
+  rr(g,x-badgeWidth/2,y-badgeHeight/2,badgeWidth,badgeHeight,8,isSelected?"#3b9d97":"#102f3edc");
+  text(g,id==="queue"?"WACHTRIJ":id==="prewash"?"VOORWAS":id==="belt"?"WASSTRAAT":id==="wax"?"WAX":"KANTOOR",x,y-1,isSelected?"#ecfffc":"#d3e9e6",fontSize,850);
+  if(up>0){
+   rr(g,x+badgeWidth/2-5,y-badgeHeight/2,20,19,4,"#bcecd1");
+   text(g,""+up,x+badgeWidth/2+5,y-badgeHeight/2+10,"#143b35",12,900)
+  }
  }
  if(selected&&defs[selected]){
   const r=defs[selected].rect;
@@ -397,19 +443,22 @@ function labels(g,t){
  }
 }
 function render(now){
- const g=context;g.setTransform(dpr,0,0,dpr,0,0);
+ const g=context;
+ // Use the exact backing-store ratio; avoid browser-side CSS stretching.
+ g.setTransform(canvas.width/view.w,0,0,canvas.height/view.h,0,0);
+ g.imageSmoothingEnabled=true;g.imageSmoothingQuality="high";
  g.fillStyle="#264938";g.fillRect(0,0,view.w,view.h);
- g.save();g.translate(view.w/2,view.h/2);g.scale(view.scale,view.scale);g.translate(-view.x,-view.y);
- g.drawImage(terrain,0,0);unlockedBuildings(g);
- machinery(g,simTime);
+ g.save();g.translate(view.w/2,view.h/2);
+ g.scale(view.scale,view.scale);g.translate(-view.x,-view.y);
+ // The high-density raster is mapped back to the same world dimensions.
+ g.drawImage(terrain,0,0,W,H);unlockedBuildings(g);
+ const visibleTime=simTime+accum;
+ machinery(g,visibleTime);
  const ordered=[...cars].sort((a,b)=>a.y-b.y);
- for(const car of ordered)sprite(g,car);
- effects(g,simTime);labels(g,simTime);
+ const alpha=clamp(accum*60,0,1);
+ for(const car of ordered)sprite(g,car,alpha);
+ effects(g,visibleTime);labels(g,visibleTime);
  g.restore();
- // soft vignette in viewport
- const sh=g.createLinearGradient(0,0,0,view.h);
- sh.addColorStop(0,"rgba(1,18,20,.18)");sh.addColorStop(.28,"rgba(0,0,0,0)");sh.addColorStop(1,"rgba(3,16,22,.15)");
- g.fillStyle=sh;g.fillRect(0,0,view.w,view.h);
 }
 function loop(now){
  const dt=Math.min(.05,(now-frame)/1000);frame=now;accum+=dt*speed;
